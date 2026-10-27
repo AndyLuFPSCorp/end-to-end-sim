@@ -1,3 +1,5 @@
+import {BREAD_DEFAULTS, resolveBreadShelf, makeBreadRequest} from './bread-geometry.js';
+import {fixtureBag, fixedContact, stackSettings} from './bag-fixture-parameters.js';
 import {Quaternion, Euler, Vector3} from '../vendor/three.module.js';
 import {rotate, corners} from './store.js';
 import {MOTION_DEFAULTS} from './bag-motion.js';
@@ -6,7 +8,7 @@ import {placementAssessment, placementError} from './placement-validation.js';
 export const FLOW_DEFAULTS = {
   ...MOTION_DEFAULTS,
   robot_id: 'nova5_suction',
-  bread_shelf_id: 'shelf_2',
+  ...BREAD_DEFAULTS,
   magazine_id: 'bag_magazine',
   fixture_id: 'bag_opener',
   placement_zone_id: 'placement_zone',
@@ -53,8 +55,8 @@ function overlaps(a, b) {
   });
 }
 
-export function makeWorkflowRequest(store) {
-  const settings = {...FLOW_DEFAULTS, ...store.scene.bag_workflow};
+export function makeWorkflowRequest(store, overrides = {}) {
+  const settings = {...FLOW_DEFAULTS, ...store.scene.bag_workflow, ...overrides};
   if (!Number.isFinite(settings.max_bag_tilt_deg) || settings.max_bag_tilt_deg <= 0 ||
       settings.max_bag_tilt_deg > 45) throw new Error('Bag tilt limit must be above 0° and no more than 45°.');
   if (!Number.isFinite(settings.min_j1_share) || settings.min_j1_share < 0 || settings.min_j1_share > 1)
@@ -66,7 +68,7 @@ export function makeWorkflowRequest(store) {
   const fixture = store.object(settings.fixture_id);
   const zone = store.object(settings.placement_zone_id);
   if (!robot || store.key(robot) !== 'nova5_suction') throw new Error('Choose a Nova-5 suction robot.');
-  if (!magazine || magazine.layout_component !== 'magazine') throw new Error('Choose a bag magazine.');
+  if (!magazine || magazine.layout_component !== 'magazine') throw new Error('Choose a bag stack holder.');
   if (!fixture || fixture.layout_component !== 'fixed_suction') throw new Error('Choose the fixed suction holder.');
   if (!zone || zone.kind !== 'placement_zone') throw new Error('Add or choose a placement rectangle.');
   const table = store.object(zone.support);
@@ -76,19 +78,18 @@ export function makeWorkflowRequest(store) {
     if (!store.visible(object.id)) throw new Error(object.label + ' is hidden.');
   }
 
-  const bagSpec = fixture.bag_parameters;
-  const scale = [fixture.width / .365, fixture.depth / .24, fixture.height / .304];
-  const bag = {
-    width: bagSpec.bag_width * scale[0],
-    depth: bagSpec.bag_depth * scale[1],
-    height: bagSpec.bag_height * scale[2],
-    contactHeight: .206 * scale[2],
-    flatDepth: .004 * scale[1],
-  };
+  const bag = fixtureBag(fixture);
+  const stack = stackSettings(magazine);
+  if (!stack.bag_count) throw new Error('The bag stack is empty. Increase Bags in stack in the holder properties.');
+  bag.flatDepth = stack.bag_thickness;
   const stroke = settings.pullback;
   const openDepth = bag.flatDepth + stroke;
   const warnings = [];
   const errors = [];
+  if (stack.bag_width > magazine.width - .008 || stack.bag_height > magazine.depth - .008)
+    errors.push('The flattened bag does not fit inside the stack holder. Increase holder width/depth.');
+  if (Math.abs(stack.bag_width - bag.width) > .001 || Math.abs(stack.bag_height - bag.height) > .001)
+    errors.push('Stack bag width/height must match the bag at the opening fixture.');
   if (stroke <= 0 || openDepth > bag.depth + .0001) {
     errors.push('Opening stroke must be positive and no more than ' +
       ((bag.depth - bag.flatDepth) * 100).toFixed(1) + ' cm for this bag.');
@@ -98,17 +99,21 @@ export function makeWorkflowRequest(store) {
   }
   const boundaryError = placementError(placementBounds);
   if (boundaryError) errors.push(boundaryError);
+  // A barrier footprint is an L-shaped panel envelope with an empty interior.
+  // Do not treat that bounding rectangle as a solid occupied tabletop area.
   const blockers = store.scene.objects.filter(object =>
     object.id !== zone.id && object.support === table.id &&
-    object.kind !== 'placement_zone' && store.visible(object.id) && overlaps(zone, object));
+    !['placement_zone', 'customer_barrier'].includes(object.kind) && store.visible(object.id) && overlaps(zone, object));
   if (blockers.length) errors.push('Placement rectangle overlaps: ' + blockers.map(object => object.label).join(', '));
 
   const pickup = surfacePose(store, magazine, [
-    0, -.064 * magazine.depth / .195, .23 * magazine.height / .325,
-  ], 'Bag magazine front', 'magazine');
-  const fixed = surfacePose(store, fixture, [
-    0, .045 * scale[1] - bag.flatDepth, .23 * scale[2],
-  ], 'Opposing suction contact', 'fixed');
+    0, -bag.height / 2 + bag.contactHeight, stack.top,
+  ], 'Top bag pickup', 'magazine');
+  pickup.quaternion = new Quaternion().setFromEuler(new Euler(Math.PI, 0,
+    (magazine.yaw_deg || 0) * Math.PI / 180, 'ZYX')).toArray();
+  const fixedLocal = fixedContact(fixture);
+  const fixed = surfacePose(store, fixture,
+    [fixedLocal[0], fixedLocal[1] - bag.flatDepth, fixedLocal[2]], 'Opposing suction contact', 'fixed');
   const opened = {...displaced(fixed, stroke), id: 'open', name: 'After opening stroke'};
   const supportHeight = store.z(table) + table.height;
   const placementPose = (x, y, id, name) => surfacePose(store,
@@ -128,17 +133,25 @@ export function makeWorkflowRequest(store) {
     }
   }
 
-  const breadShelf = store.object(settings.bread_shelf_id);
+  if (!['magic','nova'].includes(settings.bread_mode)) throw new Error('Atom-W bread pickup is not implemented yet. Choose magic or Nova-5.');
+  const breadShelf = resolveBreadShelf(store, settings);
   const bread = breadShelf ? store.shelfSettings(breadShelf) : store.scene.shelves;
   const breadSize = [bread.bread_length_1, bread.bread_length_2, bread.bread_height];
-  if (breadSize[0] > bag.width || breadSize[1] > openDepth) {
+  const breadTask = makeBreadRequest(store, settings, opened, bag, openDepth);
+  const breadFits = breadTask ? breadTask.fits : breadSize[0] <= bag.width && breadSize[1] <= openDepth;
+  if (breadTask && !breadFits) errors.push('The vertically held bun does not fit the bag: allow 4 mm total clearance for bun width and thickness, and sufficient bag height. Adjust the rack bread size or bag dimensions.');
+  if (!breadTask && !breadFits) {
     warnings.push('Bread placeholder is ' + (breadSize[0] * 100).toFixed(1) + ' × ' +
       (breadSize[1] * 100).toFixed(1) + ' cm; the opening is ' +
       (bag.width * 100).toFixed(1) + ' × ' + (openDepth * 100).toFixed(1) +
       ' cm. Adjust bag/opening or bread dimensions before loading.');
   }
   const approach = displaced(pickup, settings.approach);
-  const withdrawn = displaced(pickup, settings.approach, settings.lift);
+  // Clear the holder before rotating the whole empty bag from flat to upright.
+  const turnHeight = Math.max(pickup.position[2] + settings.lift,
+    store.z(magazine) + magazine.height + bag.contactHeight + .02);
+  const lifted = {...pickup, position: [pickup.position[0], pickup.position[1], turnHeight]};
+  const withdrawn = {...lifted, quaternion: orientation(magazine.yaw_deg || 0)};
   const fixedApproach = displaced(fixed, settings.approach, settings.lift);
   const released = displaced(opened, settings.approach, settings.lift);
   const aboveZone = {...placement, position: [placement.position[0], placement.position[1], placement.position[2] + settings.lift]};
@@ -150,11 +163,12 @@ export function makeWorkflowRequest(store) {
       robotVacuum: true, fixedVacuum: false, loaded: false, ...state,
     });
   }
-  knot(0, displaced(approach, 0, settings.lift), 'Approach magazine', {bagState: 'magazine', robotVacuum: false, clearance: true});
-  knot(1.5, approach, 'Approach magazine', {bagState: 'magazine', robotVacuum: false});
-  knot(3, pickup, 'Grip one bag');
-  knot(3.8, pickup, 'Confirm robot vacuum');
-  knot(5.5, withdrawn, 'Withdraw bag', {clearance: true});
+  knot(0, displaced(approach, 0, settings.lift), 'Approach bag stack', {bagState: 'magazine', robotVacuum: false, clearance: true});
+  knot(1.5, approach, 'Approach top bag', {bagState: 'magazine', robotVacuum: false});
+  knot(3, pickup, 'Grip top bag', {allowBagReorientation: true});
+  knot(3.8, pickup, 'Confirm robot vacuum', {allowBagReorientation: true});
+  knot(5.5, lifted, 'Lift clear of stack holder', {allowBagReorientation: true});
+  knot(7, withdrawn, 'Turn empty bag upright');
   knot(7.5, fixedApproach, 'Carry to fixed holder', {clearance: true, transfer: 'fixed'});
   knot(9, fixed, 'Present to opposing suction', {fixedVacuum: true});
   knot(10, fixed, 'Confirm opposing vacuum', {fixedVacuum: true});
@@ -167,11 +181,14 @@ export function makeWorkflowRequest(store) {
   knot(22.8, placement, 'Release robot vacuum', {bagState: 'placed', robotVacuum: false, bagDepth: openDepth, loaded: true});
   knot(24, retreat, 'Retract from placed bag', {bagState: 'placed', robotVacuum: false, bagDepth: openDepth, loaded: true, clearance: true});
 
+  // Allow the added upright-turn step its own time before the existing sequence.
+  for (const k of knots) if (k.time >= 7.5) k.time += 1.5;
+
   return {
     settings, robot, mountingHeight: store.z(robot),
     targets: [pickup, fixed, opened, placement], zoneSamples, knots,
-    bag, breadSize, errors, warnings, zone, fixture, placementBounds,
-    duration: 24,
-    breadFits: breadSize[0] <= bag.width && breadSize[1] <= openDepth,
+    bag, stack, breadSize, breadTask, errors, warnings, zone, fixture, placementBounds,
+    duration: 25.5,
+    breadFits,
   };
 }
