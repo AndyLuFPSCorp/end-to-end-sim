@@ -19,12 +19,12 @@ Controls: drag to orbit, right-drag to pan, scroll to zoom. The panel has play/p
 | Part | Model |
 |---|---|
 | Nova-5 | `coffee_bar_3d/robot-library/nova5_suction.glb` (from `nova5_lebai_tongs.urdf`) with the suction head hidden and a 100 × 110 mm stainless fry scoop on the flange. Joint motion comes from the studio's `SuctionArm` IK (`editor/ik-core.js`), with the scoop as the tool. |
-| Cooler | 150 mm cube stainless interior, then 5 mm stainless, 25 mm insulation and 5 mm stainless outer skin (220 mm outside). The lid and the bottom door use the same 5/25/5 mm stack. Both hinge on the back edge. |
-| Lid actuator | Clevis-mounted air cylinder on the +X side. Its rod drives a lever bracket on the lid (≈58 mm stroke → 100° open). |
-| Bottom door | Second air cylinder on the +X side (≈34 mm stroke → 95° open) dumps into the disposal bin. |
-| RTD | Pt100 probe drilled through the front wall, 30 mm into the cavity, with connection head and cable. The HUD shows a time-compressed temperature and the matching Pt100 resistance. |
+| Cooler | 150 mm cube stainless interior, then 5 mm stainless, 25 mm insulation and 5 mm stainless outer skin (220 mm outside). The lid and the bottom door use the same 5/25/5 mm stack. |
+| Lid actuator | Hinge on the top edge on the side away from the robot. A gooseneck arm, fixed to the lid by a trapezoid bracket, reaches over the hinge to the rod end of a vertical air cylinder. The cylinder base is pivot-mounted on the cooler wall. Retracting the cylinder (≈66 mm) pulls the arm down and tips the lid 95° up and away from the opening. |
+| Bottom door | **Design TBD.** Placeholder: back-hinged door on a second cylinder, so the dump to the disposal bin can be shown. |
+| RTD | Pt100 probe drilled through the front wall, 30 mm into the cavity, with connection head and cable. The HUD shows an illustrative, time-compressed temperature: the box holds about −18 °C for frozen fries and warms while the lid is open. It also shows the matching IEC 60751 resistance. |
 
-Cycle (22 s): belt delivers → scoop pushes the pile against the far guide rail → lid opens → arm carries the fries round the front → rolls the scoop to pour → lid closes → hold (RTD) → bottom door opens → disposal.
+Cycle (22 s): belt delivers → scoop pushes the pile against the far guide rail → lid tips open → arm carries the fries round the front → rolls the scoop to pour → lid closes → hold (RTD) → bottom door opens → disposal.
 
 Short moves (approach, scoop, pour) are straight Cartesian IK paths. Transfers are joint-space moves to the nearest IK branch. The IK is solved in the browser when the page loads.
 

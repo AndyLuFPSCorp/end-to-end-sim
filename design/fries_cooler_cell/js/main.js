@@ -49,6 +49,7 @@ const materials = {
   insulation: standard(0xf2c94c, 0, 0.92, {side: THREE.DoubleSide}),
   steel: standard(0xd4d8dc, 0.85, 0.28),
   aluminium: standard(0xb7bec6, 0.7, 0.38),
+  arm: standard(0xc3c9ce, 0.8, 0.3),
   chrome: standard(0xf2f4f6, 1, 0.12),
   dark: standard(0x2b3036, 0.3, 0.6),
   frame: standard(0x8c959e, 0.6, 0.45),
@@ -74,10 +75,12 @@ const labels = new THREE.Group();
 labels.add(
   label('Conveyor', [-0.70, 0.92, -0.65]),
   label('Nova-5', [0, 0.32, 0.16]),
-  label('Cooler box', [0.50, 0.98, 0.14]),
-  label('Air cylinders', [0.72, 0.80, -0.05]),
-  label('RTD sensor', [0.40, 0.62, 0.32]),
-  label('Disposal', [0.50, 0.33, 0.22]),
+  label('Cooler box', [0.26, 0.80, 0.04]),
+  label('Lid hinge', [0.66, 0.86, -0.12]),
+  label('Lid air cylinder', [0.78, 0.66, 0.02]),
+  label('RTD sensor', [0.50, 0.63, 0.36]),
+  label('Bottom door (TBD)', [0.62, 0.50, 0.14]),
+  label('Disposal', [0.50, 0.30, 0.22]),
 );
 scene.add(labels);
 
@@ -99,13 +102,15 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-// RTD thermal model (time-compressed): cooler holds ~3 °C, warms while the
-// lid is open and when fries go in, then recovers.
-const thermal = {temperature: 3.0};
+// RTD thermal model (time-compressed, illustrative): the cooler holds frozen
+// fries at about -18 °C, warms while the lid is open and the frozen product
+// pulls it back down.
+const HOLD_C = -18;
+const thermal = {temperature: HOLD_C};
 function stepThermal(t, dt, friesInside) {
   const open = lidAngle(t) / LID.angle;
   const T = thermal.temperature;
-  thermal.temperature += dt * (-(T - 3.0) / 7 + open * (22 - T) / 9 + friesInside * 0.012);
+  thermal.temperature += dt * ((HOLD_C - T) / 7 + open * (22 - T) / 25 + friesInside * (HOLD_C - T) * 0.004);
 }
 
 const status = $('status');
@@ -149,7 +154,7 @@ function stepTo(target) {
 
 function seek(t) {
   fries.reset();
-  thermal.temperature = 3.0;
+  thermal.temperature = HOLD_C;
   state.simTime = 0;
   poseAt(0);
   stepTo(Math.max(0, Math.min(CYCLE - 1e-6, t)));
@@ -177,6 +182,12 @@ function setPlaying(on) {
   $('play').textContent = on ? 'Pause' : 'Play';
 }
 
+// IEC 60751 Callendar–Van Dusen resistance of a Pt100.
+function pt100(T) {
+  const A = 3.9083e-3, B = -5.775e-7, C = T < 0 ? -4.183e-12 : 0;
+  return 100 * (1 + A * T + B * T * T + C * (T - 100) * T ** 3);
+}
+
 function updateHud() {
   const t = state.time;
   scrub.value = t;
@@ -184,9 +195,10 @@ function updateHud() {
   $('phase').textContent = phaseAt(t);
   const T = thermal.temperature;
   $('rtd').textContent = `${T.toFixed(1)} °C`;
-  $('rtd-ohm').textContent = `${(100 * (1 + 0.00385 * T)).toFixed(2)} Ω`;
-  $('lid').textContent = `${(lidAngle(t) / DEG).toFixed(0)}° · stroke ${(cooler.lidCylinder.stroke * 1000).toFixed(0)} mm`;
-  $('door').textContent = `${(doorAngle(t) / DEG).toFixed(0)}° · stroke ${(cooler.doorCylinder.stroke * 1000).toFixed(0)} mm`;
+  $('rtd-ohm').textContent = `${pt100(T).toFixed(2)} Ω`;
+  const rod = stroke => `rod ${stroke > 0.0005 ? '+' : ''}${(stroke * 1000).toFixed(0)} mm`;
+  $('lid').textContent = `${(lidAngle(t) / DEG).toFixed(0)}° · ${rod(cooler.lidCylinder.stroke)}`;
+  $('door').textContent = `${(doorAngle(t) / DEG).toFixed(0)}° · ${rod(cooler.doorCylinder.stroke)}`;
   const c = fries.counts();
   $('fries').textContent = `belt ${c.belt} · scoop ${c.scoop} · cooler ${c.cooler} · bin ${c.bin}` + (c.falling ? ` · falling ${c.falling}` : '');
 }

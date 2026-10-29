@@ -64,9 +64,11 @@ const check = (ok, message) => {
     await page.evaluate(() => window.cell.setSection(true));
     await page.evaluate(() => window.cell.view([0.2, 1.0, 0.7], [0.5, 0.67, 0]));
     await at(13.5, '08_section');
-    await page.evaluate(() => window.cell.view([1.1, 0.95, 0.55], [0.55, 0.62, 0]));
+    await page.evaluate(() => window.cell.view([0.95, 1.0, 0.75], [0.55, 0.75, 0]));
     await page.evaluate(() => window.cell.setSection(false));
-    await at(6.8, '09_cylinder_lid');
+    await at(3.0, '09a_lid_closed');
+    await at(6.6, '09b_lid_opening');
+    await at(8.0, '09c_lid_open');
     await at(16.4, '10_cylinder_door');
     check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.join(' | ') : ''}`);
   } finally {

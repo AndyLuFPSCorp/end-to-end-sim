@@ -35,8 +35,9 @@ const BIN_BOX = {
 export class FrySim {
   constructor(parent) {
     const geometry = new THREE.BoxGeometry(...FRY);
-    const shades = [0xe8b64a, 0xdba43c, 0xf1c86a, 0xd99a33].map(color =>
-      new THREE.MeshStandardMaterial({color, roughness: 0.72}));
+    // Frozen fries: pale, with a matte frost.
+    const shades = [0xf2e3b3, 0xe9d49a, 0xf6ebc8, 0xe4cb8a].map(color =>
+      new THREE.MeshStandardMaterial({color, roughness: 0.95}));
     const random = mulberry32(5);
     this.fries = Array.from({length: PILE.count}, (_, i) => {
       const mesh = new THREE.Mesh(geometry, shades[i % shades.length]);

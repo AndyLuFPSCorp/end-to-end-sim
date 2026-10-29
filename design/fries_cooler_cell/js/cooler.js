@@ -1,6 +1,8 @@
 // Insulated cooler box: 150 mm stainless interior, 5 mm inner skin, 25 mm
 // insulation, 5 mm outer skin (220 mm outside). Local frame: origin at the
-// bottom centre, +Y up, hinges on the back (-Z) edges, actuators on +X.
+// bottom centre, +Y up. The lid hinges on the top +X edge (away from the
+// robot) and is tipped open by a gooseneck arm and an air cylinder on the +X
+// side; the bottom door (design TBD) is a placeholder hinged on the back edge.
 import * as THREE from 'three';
 
 export const COOLER = {interior: 0.150, innerSteel: 0.005, insulation: 0.025, outerSteel: 0.005};
@@ -11,12 +13,15 @@ export const OUTER = 2 * HALF_OUT;
 export const FLOOR_Y = WALL;                 // interior floor (top of bottom door)
 export const TOP_Y = WALL + COOLER.interior; // interior ceiling (underside of lid)
 
-// Hinge lines (along X) on the back edges.
-const LID_HINGE = new THREE.Vector3(0, OUTER, -HALF_OUT);
+// Lid hinge axis (along Z) just outside the top +X edge. The gooseneck arm is
+// fixed to the lid and reaches over the hinge to the cylinder's rod end, so
+// retracting the cylinder pulls the arm down and tips the lid up and away.
+const LID_HINGE = new THREE.Vector3(HALF_OUT + 0.01, OUTER + 0.005, 0);
+const LID_PIN = new THREE.Vector3(0.06, 0.012, 0);        // rod end, lid-hinge frame
+const LID_PIVOT = new THREE.Vector3(0.17, 0.04, 0);       // cylinder base pivot on the box
+const ARM_PATH = [[-0.085, 0.02], [-0.035, 0.065], [0.06, 0.048], [0.06, 0.012]];
+// Bottom door placeholder: hinged on the back edge (along X).
 const DOOR_HINGE = new THREE.Vector3(0, 0, -HALF_OUT);
-// Cylinder pivots on the box and rod-end pins on the lid / door levers.
-const LID_PIVOT = new THREE.Vector3(0.13, 0.06, 0.02);
-const LID_PIN = new THREE.Vector3(0.13, 0.03, 0.05);      // in lid-hinge frame
 const DOOR_PIVOT = new THREE.Vector3(0.155, 0.15, -0.08);
 const DOOR_PIN = new THREE.Vector3(0.155, -0.02, 0.05);   // in door-hinge frame
 
@@ -92,40 +97,60 @@ export function buildCooler(m) {
   }
 
   // Lid and bottom door: the same 5 / 25 / 5 mm sandwich, full 220 mm footprint.
-  const slabs = (parent, sign) => {
+  // `face` is the cavity-side face height; sign stacks layers up (+1) or down (-1).
+  const slabs = (parent, sign, x, face, z) => {
     const stack = [[m.innerSteel, COOLER.innerSteel], [m.insulation, COOLER.insulation], [m.outerSteel, COOLER.outerSteel]];
-    let y = sign > 0 ? -WALL : WALL; // start at the inner (cavity) face
+    let y = face;
     for (const [material, t] of stack) {
-      box(parent, [OUTER, t, OUTER], material, [0, y + sign * t / 2, HALF_OUT]);
+      box(parent, [OUTER, t, OUTER], material, [x, y + sign * t / 2, z]);
       y += sign * t;
     }
   };
   const lid = new THREE.Group();
+  lid.name = 'Lid';
   lid.position.copy(LID_HINGE);
   root.add(lid);
-  slabs(lid, 1);
-  // Lid lever: bracket off the +X edge carrying the cylinder's rod-end pin.
-  box(lid, [0.006, 0.02, 0.06], m.outerSteel, [0.113, -0.0175, 0.05]);
-  box(lid, [0.005, 0.08, 0.06], m.outerSteel, [0.1185, 0.005, 0.05]);
-  cylinder(lid, 0.004, 0.03, m.chrome, LID_PIN.toArray(), 'x', 12);
-  box(lid, [0.08, 0.01, 0.012], m.dark, [0, 0.005, OUTER - 0.012]);
+  slabs(lid, 1, -LID_HINGE.x, TOP_Y - LID_HINGE.y, 0);
+  // Trapezoid bracket on the lid carrying the gooseneck arm.
+  const lidTop = OUTER - LID_HINGE.y;
+  const trapezoid = new THREE.Shape();
+  trapezoid.moveTo(-0.135, lidTop);
+  trapezoid.lineTo(-0.065, lidTop);
+  trapezoid.lineTo(-0.075, lidTop + 0.03);
+  trapezoid.lineTo(-0.12, lidTop + 0.03);
+  trapezoid.closePath();
+  const bracket = new THREE.Mesh(new THREE.ExtrudeGeometry(trapezoid, {depth: 0.03, bevelEnabled: false}), m.arm);
+  bracket.position.z = -0.015;
+  bracket.castShadow = true;
+  lid.add(bracket);
+  for (let i = 0; i < ARM_PATH.length - 1; i++) {
+    const a = new THREE.Vector3(...ARM_PATH[i], 0), b = new THREE.Vector3(...ARM_PATH[i + 1], 0);
+    const span = b.clone().sub(a);
+    const bar = box(lid, [span.length() + 0.012, 0.012, 0.016], m.arm, [0, 0, 0]);
+    bar.position.copy(a).addScaledVector(span, 0.5);
+    bar.rotation.z = Math.atan2(span.y, span.x);
+  }
+  cylinder(lid, 0.004, 0.034, m.chrome, LID_PIN.toArray(), 'z', 12);
+  // Hinge: two knuckles on the axis, leaves on the lid top and the +X wall.
+  for (const z of [-0.07, 0.07]) {
+    cylinder(lid, 0.006, 0.045, m.chrome, [0, 0, z], 'z', 16);
+    box(lid, [0.025, 0.003, 0.045], m.chrome, [-0.0125, lidTop + 0.0015, z]);
+    box(root, [0.003, 0.03, 0.045], m.chrome, [HALF_OUT + 0.0015, OUTER - 0.02, z]);
+  }
 
   const door = new THREE.Group();
   door.position.copy(DOOR_HINGE);
   root.add(door);
-  slabs(door, -1);
+  slabs(door, -1, 0, WALL, HALF_OUT);
   box(door, [0.04, 0.05, 0.04], m.outerSteel, [0.13, 0, 0.05]);
   cylinder(door, 0.004, 0.03, m.chrome, DOOR_PIN.toArray(), 'x', 12);
 
-  // Hinge knuckles on both back edges.
-  for (const y of [OUTER, 0]) {
-    for (const x of [-0.06, 0.06]) cylinder(root, 0.006, 0.045, m.chrome, [x, y, -HALF_OUT - 0.003], 'x', 16);
-  }
+  for (const x of [-0.06, 0.06]) cylinder(root, 0.006, 0.045, m.chrome, [x, 0, -HALF_OUT - 0.003], 'x', 16);
 
-  // Cylinder clevis brackets on the +X wall.
-  box(root, [0.02, 0.03, 0.03], m.outerSteel, [0.12, LID_PIVOT.y, LID_PIVOT.z]);
+  // Cylinder base-pivot brackets on the +X wall.
+  box(root, [LID_PIVOT.x - HALF_OUT + 0.006, 0.03, 0.03], m.outerSteel, [(HALF_OUT + LID_PIVOT.x + 0.006) / 2, LID_PIVOT.y + 0.004, LID_PIVOT.z]);
   box(root, [0.045, 0.03, 0.03], m.outerSteel, [0.1325, DOOR_PIVOT.y, DOOR_PIVOT.z]);
-  const lidCylinder = airCylinder(root, m, 0.13, 0.012);
+  const lidCylinder = airCylinder(root, m, 0.11, 0.012);
   const doorCylinder = airCylinder(root, m, 0.11, 0.01);
 
   // RTD (Pt100) probe drilled through the front wall into the cavity.
@@ -166,10 +191,10 @@ export function buildCooler(m) {
 
   const pin = new THREE.Vector3();
   const api = {
-    root, lid, door, lidCylinder, doorCylinder, rtdTip: tipWorld,
+    root, lid, door, lidCylinder, doorCylinder, rtdTip: tipWorld, lidHinge: LID_HINGE,
     shellMaterials: [m.innerSteel, m.insulation, m.outerSteel],
     setAngles(lidAngle, doorAngle) {
-      lid.rotation.x = -lidAngle;
+      lid.rotation.z = -lidAngle;
       door.rotation.x = doorAngle;
       lid.updateMatrix();
       door.updateMatrix();

@@ -16,7 +16,7 @@ export const BELT = {
 };
 export const PILE = {x: -0.77, z: 0, rx: 0.034, rz: 0.04, count: 24};
 
-export const LID = {open: [6.0, 7.2], close: [12.0, 13.2], angle: 100 * DEG};
+export const LID = {open: [6.0, 7.2], close: [12.0, 13.2], angle: 95 * DEG};
 export const DOOR = {open: [15.5, 16.3], close: [18.0, 18.8], angle: 95 * DEG};
 export const CAPTURE = [3.8, 5.8];
 export const RELEASE = [9.0, 10.6];
@@ -25,11 +25,11 @@ export const BIN_FADE = [20.0, 21.5];
 export const PHASES = [
   [0, 'Conveyor delivers fries'],
   [2.8, 'Nova-5 scoops fries off the belt'],
-  [5.8, 'Carry to cooler · air cylinder opens lid'],
+  [5.8, 'Carry to cooler · cylinder retracts, lid tips open'],
   [9.0, 'Dump fries into the cooler'],
   [10.6, 'Retract · lid closes'],
   [13.2, 'Holding · RTD monitoring temperature'],
-  [15.5, 'Bottom door opens · fries to disposal'],
+  [15.5, 'Bottom door (design TBD) · fries to disposal'],
   [18.8, 'Door closed · disposal emptied'],
 ];
 
