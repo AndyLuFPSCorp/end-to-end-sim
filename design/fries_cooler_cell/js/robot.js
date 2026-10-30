@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import {GLTFLoader} from 'three/addons/GLTFLoader.js';
 import {SuctionArm, interpolateTarget} from '../../coffee_bar_3d/editor/ik-core.js';
 import {poseSuctionRobot} from '../../coffee_bar_3d/editor/suction-render.js';
-import {smooth} from './timeline.js';
+import {smooth, SCOOP} from './timeline.js';
 
 const LIBRARY = '../coffee_bar_3d/robot-library/';
 // URDF (+Z up) <-> glTF / Three (+Y up). The exporter conjugates every node
@@ -14,8 +14,7 @@ const A_INV = A.clone().invert();
 const toUrdf = m => A_INV.clone().multiply(m).multiply(A);
 const fromUrdf = m => A.clone().multiply(m).multiply(A_INV);
 
-// Scoop dimensions in the tool frame: +X = open front, +Y = bowl up, +Z = side.
-export const SCOOP = {length: 0.10, width: 0.11, reach: 0.17, drop: 0.085, wall: 0.003};
+export {SCOOP};
 
 function buildScoop(steel, dark) {
   // Mount sits on the Link6 flange; tool +X = flange axis (Link6 +Y in glTF).
@@ -32,28 +31,28 @@ function buildScoop(steel, dark) {
   };
   const disk = add(new THREE.CylinderGeometry(0.032, 0.032, 0.012, 40), dark, 0.006, 0, 0);
   disk.rotation.z = -Math.PI / 2;
-  add(new THREE.BoxGeometry(0.018, 0.05, 0.03), steel, 0.021, -0.012, 0);
 
-  const {length: L, width: W, reach, drop, wall} = SCOOP;
+  const {length: L, width: W, back, front, wall, reach, drop} = SCOOP;
   const tcp = new THREE.Object3D();
   tcp.name = 'Scoop TCP';
   tcp.position.set(reach, -drop, 0);
   mount.add(tcp);
 
-  // Stem from the adapter down to the top of the bowl's back wall.
-  const from = new THREE.Vector3(0.028, -0.02, 0), to = new THREE.Vector3(reach - L / 2, -drop + 0.045, 0);
-  const span = to.clone().sub(from);
-  const stem = add(new THREE.BoxGeometry(span.length(), 0.008, 0.024), steel, 0, 0, 0);
-  stem.position.copy(from).addScaledVector(span, 0.5);
-  stem.rotation.z = Math.atan2(span.y, span.x);
+  // Adapter plate from the flange to the back wall, with two gussets.
+  const backX = reach - L / 2;
+  add(new THREE.BoxGeometry(backX - 0.012, 0.05, 0.06), steel, 0.012 + (backX - 0.012) / 2, 0, 0);
+  for (const z of [-0.025, 0.025]) add(new THREE.BoxGeometry(backX - 0.02, 0.04, 0.004), steel, 0.02 + (backX - 0.02) / 2, -0.035, z);
 
   add(new THREE.BoxGeometry(L, wall, W), steel, 0, -wall / 2, 0, tcp);
-  add(new THREE.BoxGeometry(wall, 0.05, W), steel, -L / 2 - wall / 2, 0.025, 0, tcp);
+  add(new THREE.BoxGeometry(wall, back, W), steel, -L / 2 - wall / 2, back / 2, 0, tcp);
+  // Bevelled lip so the belt can slide under it and feed fries onto the floor.
+  const lip = add(new THREE.BoxGeometry(0.018, wall, W), dark, L / 2 + 0.006, -wall / 2, 0, tcp);
+  lip.rotation.z = -0.12;
   const profile = new THREE.Shape();
   profile.moveTo(-L / 2, 0);
   profile.lineTo(L / 2, 0);
-  profile.lineTo(L / 2, 0.012);
-  profile.lineTo(-L / 2, 0.05);
+  profile.lineTo(L / 2, front);
+  profile.lineTo(-L / 2, back);
   profile.closePath();
   const side = new THREE.ExtrudeGeometry(profile, {depth: wall, bevelEnabled: false});
   add(side, steel, 0, 0, W / 2 - wall, tcp);
@@ -136,14 +135,37 @@ function nearest(arm, goal, reference) {
 // Precompute joint trajectories for every segment: 'line' segments solve IK
 // densely along the Cartesian path seeded from the previous sample; 'joint'
 // segments interpolate to the nearest IK branch of each waypoint.
-export function planTrajectory(arm, segments, poses, preferred) {
+// Try every IK branch of the start pose and keep the first plan that tracks
+// the whole cycle continuously with the loaded scoop kept near level.
+export function planTrajectory(arm, segments, poses, preferred, branch = {}) {
   const startGoal = target(poses[segments[0].poses[0]]);
-  // Start in the "facing the target, elbow up" branch: small shoulder lean,
+  // Prefer the "facing the target, elbow up" branch: small shoulder lean,
   // elbow near 90°.
   const comfort = q => Math.abs(q[1]) + 0.5 * Math.abs(q[2] - Math.PI / 2) + 0.2 * Math.abs(q[3]);
-  const first = candidates(arm, startGoal, [preferred]).reduce((a, b) => (comfort(a.q) <= comfort(b.q) ? a : b));
+  const starts = [];
+  for (const c of candidates(arm, startGoal, [preferred]).sort((a, b) => comfort(a.q) - comfort(b.q))) {
+    if (!starts.some(s => distance(s.q, unwrap(arm, c.q, s.q)) < 0.2)) starts.push(c);
+  }
+  let best = null;
+  for (const first of starts) {
+    const plan = planFrom(arm, segments, poses, branch, first);
+    const r = plan.report;
+    const good = !r.failures && r.maxJointStep < 0.2 && r.minCarryUp > 0.85;
+    if (good) return {...plan, branchesTried: starts.indexOf(first) + 1};
+    if (!best || r.failures < best.report.failures) best = plan;
+  }
+  return {...best, branchesTried: starts.length};
+}
+
+function planFrom(arm, segments, poses, branch, first) {
   let q = first.q;
-  const report = {maxPositionError: 0, maxOrientationError: 0, maxJointStep: 0, failures: 0, samples: 0, segments: []};
+  const report = {maxPositionError: 0, maxOrientationError: 0, maxJointStep: 0, failures: 0, samples: 0, segments: [], minCarryUp: 1};
+  // Scoop-up vertical component, to check a loaded scoop stays near level.
+  const upY = q => {
+    const pose = arm.forward(q);
+    const m = fromUrdf(new THREE.Matrix4().compose(pose.position, pose.quaternion, new THREE.Vector3(1, 1, 1)));
+    return new THREE.Vector3().setFromMatrixColumn(m, 1).y;
+  };
   const record = (stats, result, previous) => {
     const step = Math.max(...result.q.map((v, j) => Math.abs(v - previous[j])));
     for (const target of [report, stats]) {
@@ -173,7 +195,11 @@ export function planTrajectory(arm, segments, poses, preferred) {
     } else if (segment.mode === 'joint') {
       const per = Math.max(8, Math.ceil(duration * 40 / segment.poses.length));
       for (const key of segment.poses) {
-        const result = nearest(arm, target(poses[key]), q) || {...arm.solve(target(poses[key]), q, 300)};
+        const goal = target(poses[key]);
+        // Returning to the start pose: reuse the start solution so the cycle loops.
+        const hinted = key === segments[0].poses[0] ? {...first, ok: true}
+          : branch[key] && arm.solve(goal, branch[key].map(v => v * Math.PI / 180), 300);
+        const result = hinted?.ok ? {...hinted, q: unwrap(arm, hinted.q, q)} : nearest(arm, goal, q) || {...arm.solve(goal, q, 300)};
         record(stats, {...result, q: q}, q);
         (stats.waypoints = stats.waypoints || []).push({key, ok: result.ok, error: result.positionError, q: result.q.map(v => Math.round(v * 180 / Math.PI))});
         const from = q;
@@ -182,6 +208,7 @@ export function planTrajectory(arm, segments, poses, preferred) {
         q = result.q;
       }
     }
+    if (segment.carry) for (const sample of samples) report.minCarryUp = Math.min(report.minCarryUp, upY(sample));
     return {...segment, samples};
   });
   const sample = t => {

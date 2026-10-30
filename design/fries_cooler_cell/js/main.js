@@ -2,10 +2,10 @@ import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/OrbitControls.js';
 import {RoomEnvironment} from 'three/addons/RoomEnvironment.js';
 import {
-  CYCLE, DEG, ROBOT_BASE, COOLER_POS, BIN_POS, LID, CAPTURE, RELEASE, POSES, ROBOT_SEGMENTS,
+  CYCLE, DEG, ROBOT_BASE, COOLER_POS, BIN_POS, LID, DOOR, CAPTURE, RELEASE, POSES, ROBOT_SEGMENTS, BRANCH, BATCH,
   beltTravel, lidAngle, doorAngle, phaseAt,
 } from './timeline.js';
-import {buildCooler, OUTER} from './cooler.js';
+import {buildCooler, OUTER, RTD_PROBE} from './cooler.js';
 import {buildConveyor, buildPedestal, buildBin, buildFloor, label} from './props.js';
 import {loadNova5, planTrajectory} from './robot.js';
 import {FrySim} from './fries.js';
@@ -73,12 +73,13 @@ scene.add(buildBin(materials, BIN_POS));
 
 const labels = new THREE.Group();
 labels.add(
-  label('Conveyor', [-0.70, 0.92, -0.65]),
+  label('Conveyor', [-0.55, 0.92, -0.95]),
   label('Nova-5', [0, 0.32, 0.16]),
   label('Cooler box', [0.26, 0.80, 0.04]),
   label('Lid hinge', [0.66, 0.86, -0.12]),
   label('Lid air cylinder', [0.78, 0.66, 0.02]),
-  label('RTD sensor', [0.50, 0.63, 0.36]),
+  label('RTD sensor (in product)', [0.50, 0.54, 0.36]),
+  label('Funnel guides', [-0.55, 0.86, -0.42]),
   label('Bottom door (TBD)', [0.62, 0.50, 0.14]),
   label('Disposal', [0.50, 0.30, 0.22]),
 );
@@ -102,15 +103,19 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-// RTD thermal model (time-compressed, illustrative): the cooler holds frozen
-// fries at about -18 °C, warms while the lid is open and the frozen product
-// pulls it back down.
-const HOLD_C = -18;
-const thermal = {temperature: HOLD_C};
+// RTD thermal model (time-compressed, illustrative). The cooler air starts at
+// -18 °C and warms while the lid or door is open; the frozen product stays near
+// -18 °C. The probe reads the product once the pile covers its tip, otherwise
+// the air, with a first-order sensor lag.
+const PRODUCT_C = -18, AMBIENT_C = 22;
+const thermal = {temperature: PRODUCT_C, air: PRODUCT_C, inProduct: false};
+const probe = new THREE.Vector3(RTD_PROBE.x, RTD_PROBE.y, RTD_PROBE.z + 0.01).add(new THREE.Vector3(...COOLER_POS));
 function stepThermal(t, dt, friesInside) {
-  const open = lidAngle(t) / LID.angle;
-  const T = thermal.temperature;
-  thermal.temperature += dt * ((HOLD_C - T) / 7 + open * (22 - T) / 25 + friesInside * (HOLD_C - T) * 0.004);
+  const open = Math.max(lidAngle(t) / LID.angle, doorAngle(t) / DOOR.angle);
+  thermal.air += dt * ((PRODUCT_C - thermal.air) * (friesInside ? 0.12 : 0.04) + open * (AMBIENT_C - thermal.air) / 20);
+  thermal.inProduct = friesInside > 0 && fries.coolerLevel(probe.x, probe.z) > probe.y + 0.004;
+  const reading = thermal.inProduct ? PRODUCT_C + 0.4 : thermal.air;
+  thermal.temperature += dt * (reading - thermal.temperature) / 1.5;
 }
 
 const status = $('status');
@@ -120,7 +125,7 @@ scene.add(robot.root);
 status.textContent = 'Planning scoop path (IK)…';
 await new Promise(requestAnimationFrame);
 const preferred = [180, -10, 100, 0, -90, 0].map(v => v * DEG);
-const plan = planTrajectory(robot.arm, ROBOT_SEGMENTS, POSES, preferred);
+const plan = planTrajectory(robot.arm, ROBOT_SEGMENTS, POSES, preferred, BRANCH);
 const fries = new FrySim(scene);
 
 const state = {time: 0, simTime: 0, playing: true, speed: 1};
@@ -154,7 +159,7 @@ function stepTo(target) {
 
 function seek(t) {
   fries.reset();
-  thermal.temperature = HOLD_C;
+  Object.assign(thermal, {temperature: PRODUCT_C, air: PRODUCT_C, inProduct: false});
   state.simTime = 0;
   poseAt(0);
   stepTo(Math.max(0, Math.min(CYCLE - 1e-6, t)));
@@ -195,12 +200,13 @@ function updateHud() {
   $('phase').textContent = phaseAt(t);
   const T = thermal.temperature;
   $('rtd').textContent = `${T.toFixed(1)} °C`;
-  $('rtd-ohm').textContent = `${pt100(T).toFixed(2)} Ω`;
+  $('rtd-ohm').textContent = `${pt100(T).toFixed(2)} Ω · ${thermal.inProduct ? 'in product' : 'in air'}`;
   const rod = stroke => `rod ${stroke > 0.0005 ? '+' : ''}${(stroke * 1000).toFixed(0)} mm`;
   $('lid').textContent = `${(lidAngle(t) / DEG).toFixed(0)}° · ${rod(cooler.lidCylinder.stroke)}`;
   $('door').textContent = `${(doorAngle(t) / DEG).toFixed(0)}° · ${rod(cooler.doorCylinder.stroke)}`;
   const c = fries.counts();
-  $('fries').textContent = `belt ${c.belt} · scoop ${c.scoop} · cooler ${c.cooler} · bin ${c.bin}` + (c.falling ? ` · falling ${c.falling}` : '');
+  const kg = n => (n * BATCH.fryMass).toFixed(2);
+  $('fries').textContent = `belt ${kg(c.belt)} · scoop ${kg(c.scoop)} · cooler ${kg(c.cooler)} · bin ${kg(c.bin)} kg`;
 }
 
 let last = performance.now();
@@ -228,12 +234,14 @@ requestAnimationFrame(frame);
 // Hooks for the headless test.
 window.cell = {
   ready: true,
-  robot, poses: POSES,
+  robot, poses: POSES, sim: fries,
   report: plan.report,
   start: plan.start,
   seek(t) { setPlaying(false); seek(t); updateHud(); renderer.render(scene, camera); },
   counts: () => fries.counts(),
   temperature: () => thermal.temperature,
+  inProduct: () => thermal.inProduct,
+  coolerLevel: () => fries.coolerLevel(probe.x, probe.z) - COOLER_POS[1] - RTD_PROBE.y,
   setSection,
   view(position, target) { camera.position.set(...position); controls.target.set(...target); controls.update(); renderer.render(scene, camera); },
   checkFk() {

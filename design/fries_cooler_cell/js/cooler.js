@@ -12,6 +12,8 @@ export const HALF_OUT = HALF_IN + WALL;
 export const OUTER = 2 * HALF_OUT;
 export const FLOOR_Y = WALL;                 // interior floor (top of bottom door)
 export const TOP_Y = WALL + COOLER.interior; // interior ceiling (underside of lid)
+// RTD sensing tip (cooler frame): 40 mm above the floor, 40 mm in from the front wall.
+export const RTD_PROBE = {x: 0, y: FLOOR_Y + 0.04, z: HALF_IN - 0.04};
 
 // Lid hinge axis (along Z) just outside the top +X edge. The gooseneck arm is
 // fixed to the lid and reaches over the hinge to the cylinder's rod end, so
@@ -157,8 +159,10 @@ export function buildCooler(m) {
   const rtd = new THREE.Group();
   rtd.name = 'RTD sensor';
   root.add(rtd);
-  const probeY = 0.13;
-  const probeTip = HALF_IN - 0.03;
+  // Low on the wall (40 mm above the floor) so the sensing tip sits inside the
+  // 1 kg product pile and measures the fries, not the air above them.
+  const probeY = RTD_PROBE.y;
+  const probeTip = RTD_PROBE.z;
   const probeOuter = HALF_OUT + 0.035;
   cylinder(rtd, 0.003, probeOuter - probeTip, m.chrome, [0, probeY, (probeOuter + probeTip) / 2], 'z', 16);
   cylinder(rtd, 0.008, 0.008, m.outerSteel, [0, probeY, HALF_OUT + 0.004], 'z', 6);
@@ -166,8 +170,8 @@ export function buildCooler(m) {
   cylinder(rtd, 0.017, 0.006, m.rtdBlue, [0, probeY, probeOuter + 0.028], 'z', 28);
   const cablePath = new THREE.CatmullRomCurve3([
     new THREE.Vector3(0, probeY - 0.016, probeOuter + 0.012),
-    new THREE.Vector3(0.01, 0.06, probeOuter + 0.03),
-    new THREE.Vector3(0.06, -0.02, probeOuter + 0.04),
+    new THREE.Vector3(0.01, 0.02, probeOuter + 0.03),
+    new THREE.Vector3(0.06, -0.03, probeOuter + 0.04),
     new THREE.Vector3(0.2, -0.07, 0.2),
   ]);
   const cable = new THREE.Mesh(new THREE.TubeGeometry(cablePath, 40, 0.003, 8), m.cable);

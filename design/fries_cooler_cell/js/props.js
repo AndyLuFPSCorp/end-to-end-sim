@@ -1,6 +1,6 @@
 // Static cell furniture: conveyor, robot pedestal, disposal bin, floor, labels.
 import * as THREE from 'three';
-import {BELT} from './timeline.js';
+import {BELT, FUNNEL} from './timeline.js';
 
 function box(parent, size, material, position) {
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(...size), material);
@@ -51,11 +51,16 @@ export function buildConveyor(m) {
     group.add(roller);
   }
   for (const s of [-1, 1]) box(group, [0.03, 0.08, length + 0.04], m.aluminium, [x + s * (width / 2 + 0.015), top - 0.035, cz]);
-  // Far guide rail doubles as the backstop the scoop pushes fries against.
-  box(group, [0.006, 0.06, length], m.outerSteel, [x - width / 2 - 0.003, top + 0.03, cz]);
-  // Near guide rail, open around the pickup zone for the scoop.
-  for (const [a, b] of [[zStart, -0.2], [0.2, zEnd]]) {
-    box(group, [0.006, 0.035, b - a], m.outerSteel, [x + width / 2 + 0.003, top + 0.0175, (a + b) / 2]);
+  for (const s of [-1, 1]) box(group, [0.006, 0.04, length], m.outerSteel, [x + s * (width / 2 + 0.003), top + 0.02, cz]);
+  // Funnel guide plates (2 mm above the belt) steer the stream into the scoop mouth.
+  for (const s of [-1, 1]) {
+    const a = new THREE.Vector3(x + s * FUNNEL.halfIn, 0, FUNNEL.zIn), b = new THREE.Vector3(x + s * FUNNEL.halfOut, 0, FUNNEL.zOut);
+    const span = b.clone().sub(a);
+    const plate = box(group, [0.004, 0.05, span.length()], m.outerSteel, [0, top + 0.027, 0]);
+    plate.position.x = (a.x + b.x) / 2;
+    plate.position.z = (a.z + b.z) / 2;
+    plate.rotation.y = Math.atan2(span.x, span.z);
+    box(group, [Math.abs(FUNNEL.halfIn - width / 2) + 0.01, 0.006, 0.03], m.outerSteel, [x + s * (FUNNEL.halfIn + width / 2) / 2, top + 0.05, FUNNEL.zIn]);
   }
   for (const z of [zStart + 0.1, zEnd - 0.1]) {
     for (const s of [-1, 1]) box(group, [0.04, top - 0.07, 0.04], m.aluminium, [x + s * (width / 2 - 0.02), (top - 0.07) / 2, z]);
