@@ -1,10 +1,10 @@
-// Nova-5 with a fry scoop. Reuses the coffee-bar studio's robot library,
-// URDF kinematics (SuctionArm IK) and joint posing helper.
+// Nova-5 with an exchangeable end-of-arm tool. Reuses the coffee-bar studio's
+// robot library, URDF kinematics (SuctionArm IK) and joint posing helper.
 import * as THREE from 'three';
 import {GLTFLoader} from 'three/addons/GLTFLoader.js';
 import {SuctionArm, interpolateTarget} from '../../coffee_bar_3d/editor/ik-core.js';
 import {poseSuctionRobot} from '../../coffee_bar_3d/editor/suction-render.js';
-import {smooth, SCOOP} from './timeline.js';
+import {smooth} from './common.js';
 
 const LIBRARY = '../coffee_bar_3d/robot-library/';
 // URDF (+Z up) <-> glTF / Three (+Y up). The exporter conjugates every node
@@ -14,53 +14,8 @@ const A_INV = A.clone().invert();
 const toUrdf = m => A_INV.clone().multiply(m).multiply(A);
 const fromUrdf = m => A.clone().multiply(m).multiply(A_INV);
 
-export {SCOOP};
-
-function buildScoop(steel, dark) {
-  // Mount sits on the Link6 flange; tool +X = flange axis (Link6 +Y in glTF).
-  const mount = new THREE.Group();
-  mount.name = 'Fry scoop';
-  mount.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(
-    new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1), new THREE.Vector3(1, 0, 0)));
-  const add = (geometry, material, x, y, z, parent = mount) => {
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.set(x, y, z);
-    mesh.castShadow = true;
-    parent.add(mesh);
-    return mesh;
-  };
-  const disk = add(new THREE.CylinderGeometry(0.032, 0.032, 0.012, 40), dark, 0.006, 0, 0);
-  disk.rotation.z = -Math.PI / 2;
-
-  const {length: L, width: W, back, front, wall, reach, drop} = SCOOP;
-  const tcp = new THREE.Object3D();
-  tcp.name = 'Scoop TCP';
-  tcp.position.set(reach, -drop, 0);
-  mount.add(tcp);
-
-  // Adapter plate from the flange to the back wall, with two gussets.
-  const backX = reach - L / 2;
-  add(new THREE.BoxGeometry(backX - 0.012, 0.05, 0.06), steel, 0.012 + (backX - 0.012) / 2, 0, 0);
-  for (const z of [-0.025, 0.025]) add(new THREE.BoxGeometry(backX - 0.02, 0.04, 0.004), steel, 0.02 + (backX - 0.02) / 2, -0.035, z);
-
-  add(new THREE.BoxGeometry(L, wall, W), steel, 0, -wall / 2, 0, tcp);
-  add(new THREE.BoxGeometry(wall, back, W), steel, -L / 2 - wall / 2, back / 2, 0, tcp);
-  // Bevelled lip so the belt can slide under it and feed fries onto the floor.
-  const lip = add(new THREE.BoxGeometry(0.018, wall, W), dark, L / 2 + 0.006, -wall / 2, 0, tcp);
-  lip.rotation.z = -0.12;
-  const profile = new THREE.Shape();
-  profile.moveTo(-L / 2, 0);
-  profile.lineTo(L / 2, 0);
-  profile.lineTo(L / 2, front);
-  profile.lineTo(-L / 2, back);
-  profile.closePath();
-  const side = new THREE.ExtrudeGeometry(profile, {depth: wall, bevelEnabled: false});
-  add(side, steel, 0, 0, W / 2 - wall, tcp);
-  add(side, steel, 0, 0, -W / 2, tcp);
-  return {mount, tcp};
-}
-
-export async function loadNova5(base, materials) {
+// `buildTool(materials)` returns {mount, tcps: {name: Object3D}, animate(state)}.
+export async function loadNova5(base, materials, buildTool) {
   const [gltf, definition] = await Promise.all([
     new GLTFLoader().loadAsync(LIBRARY + 'nova5_suction.glb'),
     fetch(LIBRARY + 'nova5_suction-kinematics.json').then(r => {
@@ -76,20 +31,22 @@ export async function loadNova5(base, materials) {
     if (node.isMesh) node.castShadow = node.receiveShadow = true;
   });
   if (!link6) throw new Error('Nova-5 model has no Link6');
-  // Swap the four-cup suction head for the fry scoop.
+  // Replace the library's four-cup suction head with this cell's tool.
   link6.children.forEach(child => {
     if (!/Link6.visual/.test(child.name)) child.visible = false;
   });
-  const scoop = buildScoop(materials.steel, materials.dark);
-  link6.add(scoop.mount);
+  const tool = buildTool(materials);
+  link6.add(tool.mount);
   root.updateMatrixWorld(true);
 
   const arm = new SuctionArm({...definition, tolerance: {position: 0.001, orientationDegrees: 0.5}},
     {x: 0, y: 0, yaw_deg: 0, robot_scale: 1}, base[1]);
-  const flangeToTcp = link6.matrixWorld.clone().invert().multiply(scoop.tcp.matrixWorld);
-  arm.tool = toUrdf(flangeToTcp);
+  const flangeInverse = link6.matrixWorld.clone().invert();
+  arm.tools = Object.fromEntries(Object.entries(tool.tcps).map(([name, tcp]) =>
+    [name, toUrdf(flangeInverse.clone().multiply(tcp.matrixWorld))]));
+  arm.tool = Object.values(arm.tools)[0];
   const record = {mesh: root, node: root};
-  return {root, arm, tcp: scoop.tcp, link6, pose: q => poseSuctionRobot(record, q), fromUrdf};
+  return {root, arm, tool, tcps: tool.tcps, link6, pose: q => poseSuctionRobot(record, q), fromUrdf};
 }
 
 const target = m => {
@@ -134,10 +91,14 @@ function nearest(arm, goal, reference) {
 
 // Precompute joint trajectories for every segment: 'line' segments solve IK
 // densely along the Cartesian path seeded from the previous sample; 'joint'
-// segments interpolate to the nearest IK branch of each waypoint.
-// Try every IK branch of the start pose and keep the first plan that tracks
-// the whole cycle continuously with the loaded scoop kept near level.
+// segments interpolate to the nearest IK branch of each waypoint; a segment
+// without a mode is a hold. `segment.tool` picks the TCP; `segment.carry`
+// ('up' | 'down') checks the loaded tool stays level (Y up) or pointing down
+// (X down). Every IK branch of the start pose is tried, and the first plan that
+// tracks the whole cycle continuously is kept.
 export function planTrajectory(arm, segments, poses, preferred, branch = {}) {
+  const useTool = segment => (arm.tool = arm.tools[segment.tool] || Object.values(arm.tools)[0]);
+  useTool(segments[0]);
   const startGoal = target(poses[segments[0].poses[0]]);
   // Prefer the "facing the target, elbow up" branch: small shoulder lean,
   // elbow near 90°.
@@ -148,23 +109,22 @@ export function planTrajectory(arm, segments, poses, preferred, branch = {}) {
   }
   let best = null;
   for (const first of starts) {
-    const plan = planFrom(arm, segments, poses, branch, first);
+    const plan = planFrom(arm, segments, poses, branch, first, useTool);
     const r = plan.report;
-    const good = !r.failures && r.maxJointStep < 0.2 && r.minCarryUp > 0.85;
+    const good = !r.failures && r.maxJointStep < 0.2 && r.minCarry > 0.85;
     if (good) return {...plan, branchesTried: starts.indexOf(first) + 1};
     if (!best || r.failures < best.report.failures) best = plan;
   }
   return {...best, branchesTried: starts.length};
 }
 
-function planFrom(arm, segments, poses, branch, first) {
+function planFrom(arm, segments, poses, branch, first, useTool) {
   let q = first.q;
-  const report = {maxPositionError: 0, maxOrientationError: 0, maxJointStep: 0, failures: 0, samples: 0, segments: [], minCarryUp: 1};
-  // Scoop-up vertical component, to check a loaded scoop stays near level.
-  const upY = q => {
+  const report = {maxPositionError: 0, maxOrientationError: 0, maxJointStep: 0, failures: 0, samples: 0, segments: [], minCarry: 1};
+  const carryValue = (q, how) => {
     const pose = arm.forward(q);
     const m = fromUrdf(new THREE.Matrix4().compose(pose.position, pose.quaternion, new THREE.Vector3(1, 1, 1)));
-    return new THREE.Vector3().setFromMatrixColumn(m, 1).y;
+    return how === 'down' ? -new THREE.Vector3().setFromMatrixColumn(m, 0).y : new THREE.Vector3().setFromMatrixColumn(m, 1).y;
   };
   const record = (stats, result, previous) => {
     const step = Math.max(...result.q.map((v, j) => Math.abs(v - previous[j])));
@@ -176,14 +136,26 @@ function planFrom(arm, segments, poses, branch, first) {
     report.maxOrientationError = Math.max(report.maxOrientationError, result.orientationError);
     report.samples++;
   };
+  // Repeated moves (e.g. identical grabs) start from the same joints: reuse
+  // them. Returning to a pose already visited reuses that configuration.
+  const cache = new Map();
+  const visited = new Map();
+  const remember = (segment, key, q) => visited.set(`${segment.tool}|${key}`, q);
   const planned = segments.map(segment => {
-    const stats = {poses: segment.poses.join('>'), mode: segment.mode || 'hold', maxPositionError: 0, failures: 0, maxJointStep: 0};
+    useTool(segment);
+    const stats = {poses: segment.poses.join('>'), mode: segment.mode || 'hold', tool: segment.tool, maxPositionError: 0, failures: 0, maxJointStep: 0};
     report.segments.push(stats);
     const duration = segment.t[1] - segment.t[0];
-    const samples = [q];
+    const key = [segment.mode, segment.tool, segment.poses.join('>'), Math.round(duration * 100), q.map(v => v.toFixed(4))].join('|');
+    let samples = cache.get(key);
+    if (samples) {
+      q = samples[samples.length - 1];
+      return {...segment, samples};
+    }
+    samples = [q];
     if (segment.mode === 'line') {
       const targets = segment.poses.map(key => target(poses[key]));
-      const count = Math.max(8, Math.ceil(duration * 40));
+      const count = Math.max(8, Math.ceil(duration * 30 * Math.max(1, (targets.length - 1) / 2)));
       for (let k = 1; k <= count; k++) {
         const s = (k / count) * (targets.length - 1);
         const i = Math.min(targets.length - 2, Math.floor(s));
@@ -193,11 +165,13 @@ function planFrom(arm, segments, poses, branch, first) {
         samples.push(q);
       }
     } else if (segment.mode === 'joint') {
-      const per = Math.max(8, Math.ceil(duration * 40 / segment.poses.length));
+      const per = Math.max(8, Math.ceil(duration * 30 / segment.poses.length));
       for (const key of segment.poses) {
         const goal = target(poses[key]);
         // Returning to the start pose: reuse the start solution so the cycle loops.
-        const hinted = key === segments[0].poses[0] ? {...first, ok: true}
+        const seen = visited.get(`${segment.tool}|${key}`);
+        const hinted = key === segments[0].poses[0] && segment.tool === segments[0].tool ? {...first, ok: true}
+          : seen ? {...arm.solve(goal, seen, 50), q: seen}
           : branch[key] && arm.solve(goal, branch[key].map(v => v * Math.PI / 180), 300);
         const result = hinted?.ok ? {...hinted, q: unwrap(arm, hinted.q, q)} : nearest(arm, goal, q) || {...arm.solve(goal, q, 300)};
         record(stats, {...result, q: q}, q);
@@ -206,9 +180,14 @@ function planFrom(arm, segments, poses, branch, first) {
         for (let k = 1; k <= per; k++) samples.push(from.map((v, j) => v + (result.q[j] - v) * k / per));
         stats.maxJointStep = Math.max(stats.maxJointStep, ...result.q.map((v, j) => Math.abs(v - from[j]) / per));
         q = result.q;
+        remember(segment, key, q);
       }
+    } else {
+      remember(segment, segment.poses[0], q);
     }
-    if (segment.carry) for (const sample of samples) report.minCarryUp = Math.min(report.minCarryUp, upY(sample));
+    if (segment.mode === 'line') remember(segment, segment.poses[segment.poses.length - 1], q);
+    if (segment.carry) for (const sample of samples) report.minCarry = Math.min(report.minCarry, carryValue(sample, segment.carry));
+    cache.set(key, samples);
     return {...segment, samples};
   });
   const sample = t => {

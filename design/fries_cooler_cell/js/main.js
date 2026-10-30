@@ -1,17 +1,15 @@
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/OrbitControls.js';
 import {RoomEnvironment} from 'three/addons/RoomEnvironment.js';
-import {
-  CYCLE, DEG, ROBOT_BASE, COOLER_POS, BIN_POS, LID, DOOR, CAPTURE, RELEASE, POSES, ROBOT_SEGMENTS, BRANCH, BATCH,
-  beltTravel, lidAngle, doorAngle, phaseAt,
-} from './timeline.js';
-import {buildCooler, OUTER, RTD_PROBE} from './cooler.js';
-import {buildConveyor, buildPedestal, buildBin, buildFloor, label} from './props.js';
+import {ROBOT_BASE, phaseAt} from './common.js';
+import {buildConveyor, buildPedestal, buildFloor, buildTote, label} from './props.js';
 import {loadNova5, planTrajectory} from './robot.js';
 import {FrySim} from './fries.js';
 
-const DT = 1 / 120;
+const DT = 1 / 90;
 const $ = id => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const METHOD = (params.get('method') || 'A').toUpperCase() === 'B' ? 'B' : 'A';
 
 const canvas = $('scene');
 const renderer = new THREE.WebGLRenderer({canvas, antialias: true, preserveDrawingBuffer: true});
@@ -25,7 +23,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xf3f5f7);
 scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
 const camera = new THREE.PerspectiveCamera(40, 1, 0.02, 30);
-const HOME_VIEW = {position: [1.15, 1.45, 1.75], target: [0.0, 0.66, 0.0]};
+const HOME_VIEW = {position: [1.25, 1.5, 1.85], target: [0.1, 0.62, 0.0]};
 camera.position.set(...HOME_VIEW.position);
 const controls = new OrbitControls(camera, canvas);
 controls.target.set(...HOME_VIEW.target);
@@ -37,7 +35,7 @@ const sun = new THREE.DirectionalLight(0xffffff, 2.0);
 sun.position.set(1.5, 3.2, 2.2);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, {left: -1.6, right: 1.6, top: 1.6, bottom: -1.6, near: 0.5, far: 7});
+Object.assign(sun.shadow.camera, {left: -1.8, right: 1.8, top: 1.8, bottom: -1.8, near: 0.5, far: 7});
 sun.shadow.bias = -0.0004;
 scene.add(sun);
 
@@ -60,35 +58,39 @@ const materials = {
   motor: standard(0x37516b, 0.4, 0.5),
   bin: standard(0x4b5560, 0.05, 0.75),
   binRim: standard(0xf0b429, 0.05, 0.6),
+  smc: standard(0x9aa3ab, 0.6, 0.4),
+  rochu: standard(0x3b4148, 0.2, 0.55),
+  softFinger: standard(0xe9eef2, 0, 0.6),
+  softFingerDark: standard(0xd5dce2, 0, 0.6),
+  icersShell: standard(0xf7f8f8, 0, 0.55, {side: THREE.DoubleSide}),
+  icersLiner: standard(0xeef1f3, 0, 0.45, {side: THREE.DoubleSide}),
+  icersBlue: standard(0x2d5fae, 0.05, 0.45, {side: THREE.DoubleSide}),
+  pu: standard(0xf0d48a, 0, 0.95, {side: THREE.DoubleSide}),
+  gasket: standard(0x1b1d20, 0, 0.8),
+  icePack: standard(0x8fd6d0, 0, 0.4),
 };
 
 scene.add(buildFloor());
 const conveyor = buildConveyor(materials);
 scene.add(conveyor.group);
 scene.add(buildPedestal(materials, ROBOT_BASE));
-const cooler = buildCooler(materials);
-cooler.root.position.set(...COOLER_POS);
-scene.add(cooler.root);
-scene.add(buildBin(materials, BIN_POS));
+const tote = buildTote(materials);
+scene.add(tote.group);
 
+const {createMethod} = await import(METHOD === 'B' ? './methodB.js' : './methodA.js');
+const method = createMethod({scene, materials, label, options: {tilt: params.get('tilt')}});
 const labels = new THREE.Group();
-labels.add(
-  label('Conveyor', [-0.55, 0.92, -0.95]),
-  label('Nova-5', [0, 0.32, 0.16]),
-  label('Cooler box', [0.26, 0.80, 0.04]),
-  label('Lid hinge', [0.66, 0.86, -0.12]),
-  label('Lid air cylinder', [0.78, 0.66, 0.02]),
-  label('RTD sensor (in product)', [0.50, 0.54, 0.36]),
-  label('Funnel guides', [-0.55, 0.86, -0.42]),
-  label('Bottom door (TBD)', [0.62, 0.50, 0.14]),
-  label('Disposal', [0.50, 0.30, 0.22]),
-);
+labels.add(...method.labels);
 scene.add(labels);
+document.title = `Fries cooler cell · ${method.title}`;
+$('method').value = METHOD;
+$('tilt-row').hidden = METHOD !== 'B';
+if (method.options?.tilt) $('tilt').value = String(method.options.tilt);
 
 // Section view: cut the cooler shell at its mid-plane to show the wall layers.
-const sectionPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1), COOLER_POS[2]);
+const sectionPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1), method.sectionZ);
 function setSection(on) {
-  for (const material of cooler.shellMaterials) {
+  for (const material of method.shellMaterials) {
     material.clippingPlanes = on ? [sectionPlane] : [];
     material.needsUpdate = true;
   }
@@ -103,53 +105,50 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
+const status = $('status');
+status.textContent = 'Loading Nova-5…';
+const robot = await loadNova5(ROBOT_BASE, materials, method.buildTool);
+scene.add(robot.root);
+status.textContent = 'Planning robot path (IK)…';
+await new Promise(requestAnimationFrame);
+const plan = planTrajectory(robot.arm, method.segments, method.poses, method.preferred);
+const containers = [...method.containers, tote.container('tote')];
+const fries = new FrySim(scene, method.seeds, containers);
+const productFrame = containers.find(c => c.name === method.thermal.container).frame;
+
 // RTD thermal model (time-compressed, illustrative). The cooler air starts at
-// -18 °C and warms while the lid or door is open; the frozen product stays near
+// -18 °C and warms while the lid is open; the frozen product stays near
 // -18 °C. The probe reads the product once the pile covers its tip, otherwise
 // the air, with a first-order sensor lag.
 const PRODUCT_C = -18, AMBIENT_C = 22;
 const thermal = {temperature: PRODUCT_C, air: PRODUCT_C, inProduct: false};
-const probe = new THREE.Vector3(RTD_PROBE.x, RTD_PROBE.y, RTD_PROBE.z + 0.01).add(new THREE.Vector3(...COOLER_POS));
 function stepThermal(t, dt, friesInside) {
-  const open = Math.max(lidAngle(t) / LID.angle, doorAngle(t) / DOOR.angle);
+  const open = method.thermal.openFraction(t);
   thermal.air += dt * ((PRODUCT_C - thermal.air) * (friesInside ? 0.12 : 0.04) + open * (AMBIENT_C - thermal.air) / 20);
-  thermal.inProduct = friesInside > 0 && fries.coolerLevel(probe.x, probe.z) > probe.y + 0.004;
+  const p = method.thermal.probe;
+  thermal.inProduct = friesInside > 0 && fries.containerLevel(method.thermal.container, p.x, p.z) > p.y + 0.004;
   const reading = thermal.inProduct ? PRODUCT_C + 0.4 : thermal.air;
   thermal.temperature += dt * (reading - thermal.temperature) / 1.5;
 }
-
-const status = $('status');
-status.textContent = 'Loading Nova-5…';
-const robot = await loadNova5(ROBOT_BASE, materials);
-scene.add(robot.root);
-status.textContent = 'Planning scoop path (IK)…';
-await new Promise(requestAnimationFrame);
-const preferred = [180, -10, 100, 0, -90, 0].map(v => v * DEG);
-const plan = planTrajectory(robot.arm, ROBOT_SEGMENTS, POSES, preferred, BRANCH);
-const fries = new FrySim(scene);
 
 const state = {time: 0, simTime: 0, playing: true, speed: 1};
 
 function poseAt(t) {
   robot.pose(plan.sample(t));
-  cooler.setAngles(lidAngle(t), doorAngle(t));
-  conveyor.setTravel(beltTravel(t));
+  robot.tool.animate(method.toolState(t));
+  method.update(t);
+  productFrame.updateWorldMatrix(true, false);
+  conveyor.setTravel(method.beltTravel(t));
 }
 
 function stepTo(target) {
   while (state.simTime + DT <= target + 1e-9) {
     const t = state.simTime + DT;
     poseAt(t);
-    const counts = fries.counts();
-    fries.step(DT, {
-      t,
-      travel: beltTravel(t),
-      scoop: robot.tcp.matrixWorld,
-      capture: t >= CAPTURE[0] && t <= CAPTURE[1],
-      release: t >= RELEASE[0] && t <= RELEASE[1],
-      doorAngle: doorAngle(t),
-    });
-    stepThermal(t, DT, counts.cooler);
+    const travel = method.beltTravel(t);
+    method.control(fries, t, DT, robot);
+    fries.step(DT, {t, travel, beltSpeed: (travel - method.beltTravel(t - DT)) / DT});
+    stepThermal(t, DT, fries.counts()[method.thermal.container]);
     state.simTime = t;
   }
   state.time = target;
@@ -159,28 +158,42 @@ function stepTo(target) {
 
 function seek(t) {
   fries.reset();
+  method.reset();
   Object.assign(thermal, {temperature: PRODUCT_C, air: PRODUCT_C, inProduct: false});
   state.simTime = 0;
   poseAt(0);
-  stepTo(Math.max(0, Math.min(CYCLE - 1e-6, t)));
+  stepTo(Math.max(0, Math.min(method.cycle - 1e-6, t)));
 }
 
 // UI
 const scrub = $('scrub');
-scrub.max = CYCLE;
+scrub.max = method.cycle;
 $('play').addEventListener('click', () => setPlaying(!state.playing));
 $('restart').addEventListener('click', () => seek(0));
 $('speed').addEventListener('change', e => (state.speed = Number(e.target.value)));
-scrub.addEventListener('input', () => seek(Number(scrub.value)));
+let pendingSeek = null;
+scrub.addEventListener('input', () => {
+  if (pendingSeek === null) requestAnimationFrame(() => { seek(pendingSeek); pendingSeek = null; });
+  pendingSeek = Number(scrub.value);
+});
 $('section').addEventListener('change', e => setSection(e.target.checked));
 $('labels').addEventListener('change', e => (labels.visible = e.target.checked));
+const reload = changes => {
+  const next = new URLSearchParams(location.search);
+  for (const [k, v] of Object.entries(changes)) next.set(k, v);
+  location.search = next.toString();
+};
+$('method').addEventListener('change', e => reload({method: e.target.value}));
+$('tilt').addEventListener('change', e => reload({tilt: e.target.value}));
+$('compare').addEventListener('click', () => ($('comparison').hidden = !$('comparison').hidden));
+$('close-compare').addEventListener('click', () => ($('comparison').hidden = true));
 $('home').addEventListener('click', () => {
   camera.position.set(...HOME_VIEW.position);
   controls.target.set(...HOME_VIEW.target);
 });
 $('focus').addEventListener('click', () => {
-  camera.position.set(COOLER_POS[0] + 0.45, COOLER_POS[1] + 0.4, 0.7);
-  controls.target.set(COOLER_POS[0], COOLER_POS[1] + OUTER / 2, 0);
+  camera.position.set(...method.focus.position);
+  controls.target.set(...method.focus.target);
 });
 function setPlaying(on) {
   state.playing = on;
@@ -193,20 +206,20 @@ function pt100(T) {
   return 100 * (1 + A * T + B * T * T + C * (T - 100) * T ** 3);
 }
 
+const rod = stroke => `rod ${stroke > 0.0005 ? '+' : ''}${(stroke * 1000).toFixed(0)} mm`;
 function updateHud() {
   const t = state.time;
   scrub.value = t;
-  $('clock').textContent = `${t.toFixed(1)} / ${CYCLE} s`;
-  $('phase').textContent = phaseAt(t);
+  $('clock').textContent = `${t.toFixed(1)} / ${method.cycle} s`;
+  $('phase').textContent = phaseAt(method.phases, t);
   const T = thermal.temperature;
-  $('rtd').textContent = `${T.toFixed(1)} °C`;
-  $('rtd-ohm').textContent = `${pt100(T).toFixed(2)} Ω · ${thermal.inProduct ? 'in product' : 'in air'}`;
-  const rod = stroke => `rod ${stroke > 0.0005 ? '+' : ''}${(stroke * 1000).toFixed(0)} mm`;
-  $('lid').textContent = `${(lidAngle(t) / DEG).toFixed(0)}° · ${rod(cooler.lidCylinder.stroke)}`;
-  $('door').textContent = `${(doorAngle(t) / DEG).toFixed(0)}° · ${rod(cooler.doorCylinder.stroke)}`;
-  const c = fries.counts();
-  const kg = n => (n * BATCH.fryMass).toFixed(2);
-  $('fries').textContent = `belt ${kg(c.belt)} · scoop ${kg(c.scoop)} · cooler ${kg(c.cooler)} · bin ${kg(c.bin)} kg`;
+  const rows = [
+    ['RTD (Pt100)', `${T.toFixed(1)} °C`, 'temp'],
+    ['', `${pt100(T).toFixed(2)} Ω · ${thermal.inProduct ? 'in product' : 'in air'}`],
+    ...method.hud(t, fries.counts(), rod),
+  ];
+  const html = rows.map(([k, v, cls]) => `<dt>${k}</dt><dd${cls ? ` class="${cls}"` : ''}>${v}</dd>`).join('');
+  if ($('readout-list').innerHTML !== html) $('readout-list').innerHTML = html;
 }
 
 let last = performance.now();
@@ -215,7 +228,7 @@ function frame(now) {
   last = now;
   if (state.playing) {
     const next = state.time + dt * state.speed;
-    if (next >= CYCLE) seek(next - CYCLE);
+    if (next >= method.cycle) seek(next - method.cycle);
     else stepTo(next);
   }
   updateHud();
@@ -234,30 +247,38 @@ requestAnimationFrame(frame);
 // Hooks for the headless test.
 window.cell = {
   ready: true,
-  robot, poses: POSES, sim: fries,
+  method: METHOD, expect: method.expect, cycle: method.cycle,
+  robot, poses: method.poses, sim: fries,
   report: plan.report,
   start: plan.start,
   seek(t) { setPlaying(false); seek(t); updateHud(); renderer.render(scene, camera); },
   counts: () => fries.counts(),
   temperature: () => thermal.temperature,
   inProduct: () => thermal.inProduct,
-  coolerLevel: () => fries.coolerLevel(probe.x, probe.z) - COOLER_POS[1] - RTD_PROBE.y,
+  coverAboveProbe() {
+    const p = method.thermal.probe;
+    return fries.containerLevel(method.thermal.container, p.x, p.z) - p.y;
+  },
   setSection,
   view(position, target) { camera.position.set(...position); controls.target.set(...target); controls.update(); renderer.render(scene, camera); },
   checkFk() {
-    // URDF FK (used by IK) must agree with the rendered GLB TCP.
+    // URDF FK (used by IK) must agree with every rendered TCP.
     const q = plan.sample(state.time);
     robot.pose(q);
-    const urdf = robot.arm.forward(q);
-    const m = new THREE.Matrix4().compose(urdf.position, urdf.quaternion, new THREE.Vector3(1, 1, 1));
-    const three = robot.fromUrdf(m);
-    const a = new THREE.Vector3().setFromMatrixPosition(three);
-    const b = new THREE.Vector3().setFromMatrixPosition(robot.tcp.matrixWorld);
-    const qa = new THREE.Quaternion().setFromRotationMatrix(three), qb = new THREE.Quaternion().setFromRotationMatrix(robot.tcp.matrixWorld);
-    return {position: a.distanceTo(b), angle: qa.angleTo(qb)};
+    let worst = {position: 0, angle: 0};
+    for (const [name, tcp] of Object.entries(robot.tcps)) {
+      robot.arm.tool = robot.arm.tools[name];
+      const urdf = robot.arm.forward(q);
+      const three = robot.fromUrdf(new THREE.Matrix4().compose(urdf.position, urdf.quaternion, new THREE.Vector3(1, 1, 1)));
+      const qa = new THREE.Quaternion().setFromRotationMatrix(three), qb = new THREE.Quaternion().setFromRotationMatrix(tcp.matrixWorld);
+      worst = {
+        position: Math.max(worst.position, new THREE.Vector3().setFromMatrixPosition(three).distanceTo(new THREE.Vector3().setFromMatrixPosition(tcp.matrixWorld))),
+        angle: Math.max(worst.angle, qa.angleTo(qb)),
+      };
+    }
+    return worst;
   },
   tcp() {
-    const p = new THREE.Vector3().setFromMatrixPosition(robot.tcp.matrixWorld);
-    return p.toArray();
+    return new THREE.Vector3().setFromMatrixPosition(Object.values(robot.tcps)[0].matrixWorld).toArray();
   },
 };

@@ -11,23 +11,31 @@
   html, body { margin: 0; height: 100%; font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1c2430; background: #f3f5f7; }
   #view { position: fixed; inset: 0; }
   #scene { width: 100%; height: 100%; display: block; }
-  .panel { position: absolute; background: rgba(255,255,255,.92); border: 1px solid #d8dee4; border-radius: 10px; padding: 12px 14px; box-shadow: 0 4px 18px rgba(20,30,40,.08); }
-  #controls { top: 14px; left: 14px; width: min(360px, calc(100vw - 28px)); }
-  #readout { top: 14px; right: 14px; width: 270px; }
+  .panel { position: absolute; background: rgba(255,255,255,.93); border: 1px solid #d8dee4; border-radius: 10px; padding: 12px 14px; box-shadow: 0 4px 18px rgba(20,30,40,.08); }
+  #controls { top: 14px; left: 14px; width: min(380px, calc(100vw - 28px)); }
+  #readout { top: 14px; right: 14px; width: 300px; }
   h1 { font-size: 15px; margin: 0 0 2px; }
-  .sub { color: #66717d; font-size: 12px; margin-bottom: 10px; }
+  .sub { color: #66717d; font-size: 12px; margin-bottom: 8px; }
   #phase { font-weight: 600; margin: 6px 0; min-height: 18px; }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-  button, select { font: inherit; padding: 4px 10px; border: 1px solid #c5ced6; border-radius: 6px; background: #fff; cursor: pointer; }
+  button, select { font: inherit; padding: 4px 10px; border: 1px solid #c5ced6; border-radius: 6px; background: #fff; cursor: pointer; color: inherit; }
   button:hover { background: #eef2f5; }
   #scrub { width: 100%; }
   #clock { font-variant-numeric: tabular-nums; color: #4b5663; }
   dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; }
   dt { color: #66717d; }
   dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
-  .temp { font-size: 22px; font-weight: 600; color: #1d5fa8; text-align: right; }
+  .temp { font-size: 22px; font-weight: 600; color: #1d5fa8; }
   #status { position: absolute; left: 14px; bottom: 12px; color: #4b5663; background: rgba(255,255,255,.8); padding: 4px 8px; border-radius: 6px; }
-  @media (max-width: 720px) { #readout { top: auto; bottom: 44px; } }
+  #comparison { position: absolute; inset: 60px max(14px, calc(50vw - 520px)) 50px; overflow: auto; z-index: 5; }
+  #comparison h2 { font-size: 15px; margin: 0 0 4px; }
+  #comparison table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+  #comparison th, #comparison td { text-align: left; vertical-align: top; padding: 6px 8px; border-top: 1px solid #e2e7ec; }
+  #comparison th { color: #4b5663; font-weight: 600; width: 18%; }
+  #comparison thead th { border-top: 0; color: #1c2430; }
+  #comparison .note { color: #66717d; margin-top: 10px; }
+  .close { float: right; }
+  @media (max-width: 720px) { #readout { top: auto; bottom: 44px; } #comparison { inset: 14px; } }
 </style>
 </head>
 <body>
@@ -35,7 +43,19 @@
   <canvas id="scene" aria-label="Fries cooler cell 3D scene"></canvas>
   <section id="controls" class="panel">
     <h1>Fries cooler cell</h1>
-    <div class="sub">Conveyor → Nova-5 scoop → insulated cooler → disposal</div>
+    <div class="sub">1 kg frozen fries · conveyor → Nova-5 → cooler → disposal</div>
+    <div class="row">
+      <select id="method" aria-label="Method">
+        <option value="A">A · Belt-fed scoop</option>
+        <option value="B">B · Soft-gripper handfuls</option>
+      </select>
+      <span id="tilt-row" hidden><select id="tilt" aria-label="Dump tilt angle">
+        <option value="45">Tilt 45° (proposed)</option>
+        <option value="90">Tilt 90°</option>
+        <option value="120">Tilt 120°</option>
+      </select></span>
+      <button id="compare">Compare methods</button>
+    </div>
     <div id="phase"></div>
     <input id="scrub" type="range" min="0" step="0.01" value="0" aria-label="Timeline">
     <div class="row">
@@ -43,7 +63,7 @@
       <button id="restart">Restart</button>
       <select id="speed" aria-label="Speed">
         <option value="0.25">0.25×</option><option value="0.5">0.5×</option>
-        <option value="1" selected>1×</option><option value="2">2×</option>
+        <option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option>
       </select>
       <span id="clock"></span>
     </div>
@@ -54,14 +74,31 @@
       <button id="focus">Cooler</button>
     </div>
   </section>
-  <section id="readout" class="panel">
-    <dl>
-      <dt>RTD (Pt100)</dt><dd class="temp" id="rtd">–</dd>
-      <dt></dt><dd id="rtd-ohm">–</dd>
-      <dt>Lid</dt><dd id="lid">–</dd>
-      <dt>Bottom door</dt><dd id="door">–</dd>
-      <dt>Fries (1 kg)</dt><dd id="fries">–</dd>
-    </dl>
+  <section id="readout" class="panel"><dl id="readout-list"></dl></section>
+  <section id="comparison" class="panel" hidden>
+    <button id="close-compare" class="close">Close</button>
+    <h2>Method comparison · 1 kg batch</h2>
+    <div class="sub">Times are from this simulation; grab weights and fill rates are estimates to confirm with product tests.</div>
+    <table>
+      <thead><tr><th></th><th>A · Belt-fed scoop</th><th>B · Soft-gripper handfuls</th></tr></thead>
+      <tbody>
+        <tr><th>Transfers per kg</th><td>1 scoop (2.8 L, fills from the belt)</td><td>~5–10 grabs at ~100–200 g each (5 × 200 g shown)</td></tr>
+        <tr><th>Cycle (this model)</th><td>26 s, of which the robot is busy ~16 s</td><td>52 s: ~25 s grabbing + ~11 s working the lid + tilt dump</td></tr>
+        <tr><th>Lid</th><td>Air cylinder; opens while the robot travels; open ~7 s per batch</td><td>Robot opens and closes it with the 2-finger gripper; open ~27 s while grabbing (more heat in)</td></tr>
+        <tr><th>Hitting 1 kg</th><td>One shot: belt time or a load cell under the belt; no top-up</td><td>Can top up grab by grab against a load cell under the cooler</td></tr>
+        <tr><th>Feed</th><td>No funnel: about half the stream passes beside the 140 mm mouth and must be recirculated</td><td>Dense stream; most of it passes the pick point and must be recirculated</td></tr>
+        <tr><th>Product handling</th><td>Belt pushes fries in, no squeeze; pour at 55°</td><td>Fingers squeeze frozen fries (check breakage); drops ~12 cm into the cooler</td></tr>
+        <tr><th>Reach</th><td>Pour is at the Nova-5's limit: only a 55° tip, lip pointing away</td><td>Easy: claw points down; lid edge is close to the robot</td></tr>
+        <tr><th>Cooler</th><td>Custom stainless 150 mm cube (3.4 L), 25 mm insulation, easy to wash</td><td>ICERS 6 L PU (23 × 14 × 15 cm inside), off the shelf; plastic</td></tr>
+        <tr><th>Dumping</th><td>Bottom door (design TBD); gravity empties it fully</td><td>Tilt platform: <b>45° empties nothing</b> (fries rest against the low wall); needs ~120°, with the lid held open and the cooler clamped</td></tr>
+        <tr><th>RTD</th><td>Through the stainless wall, tip 40 mm above the floor</td><td>Drilled through the PU wall, sealed with a cable gland + sealant; cable must flex with the tilt</td></tr>
+        <tr><th>Hygiene</th><td>Stainless scoop and cooler</td><td>Silicone fingers must be food-grade and rated for −18 °C contact; more parts to clean</td></tr>
+        <tr><th>Payload</th><td>Scoop + 1 kg fries ≈ 2 kg (Nova-5: 5 kg)</td><td>Adapter + two hands (weights not yet known) + ~0.2 kg fries</td></tr>
+        <tr><th>Hardware</th><td>Custom fabrication: cooler, lid cylinder, bottom door</td><td>Catalogue parts (ROCHU + SMC) + tilt platform and drive</td></tr>
+        <tr><th>Main risks</th><td>Fries jamming at the scoop side walls; spills while pouring</td><td>Stock latches (soft gripper can't work them: replace with magnets); grab-weight scatter; dump angle</td></tr>
+      </tbody>
+    </table>
+    <div class="note">See design/fries_cooler_cell/METHODS.md for the parts-list review and assumptions.</div>
   </section>
   <div id="status">Loading…</div>
 </div>

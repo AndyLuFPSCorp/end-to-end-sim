@@ -1,6 +1,6 @@
-// Static cell furniture: conveyor, robot pedestal, disposal bin, floor, labels.
+// Static cell furniture: conveyor, robot pedestal, bins, floor, labels.
 import * as THREE from 'three';
-import {BELT, FUNNEL} from './timeline.js';
+import {BELT, TOTE} from './common.js';
 
 function box(parent, size, material, position) {
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(...size), material);
@@ -52,16 +52,6 @@ export function buildConveyor(m) {
   }
   for (const s of [-1, 1]) box(group, [0.03, 0.08, length + 0.04], m.aluminium, [x + s * (width / 2 + 0.015), top - 0.035, cz]);
   for (const s of [-1, 1]) box(group, [0.006, 0.04, length], m.outerSteel, [x + s * (width / 2 + 0.003), top + 0.02, cz]);
-  // Funnel guide plates (2 mm above the belt) steer the stream into the scoop mouth.
-  for (const s of [-1, 1]) {
-    const a = new THREE.Vector3(x + s * FUNNEL.halfIn, 0, FUNNEL.zIn), b = new THREE.Vector3(x + s * FUNNEL.halfOut, 0, FUNNEL.zOut);
-    const span = b.clone().sub(a);
-    const plate = box(group, [0.004, 0.05, span.length()], m.outerSteel, [0, top + 0.027, 0]);
-    plate.position.x = (a.x + b.x) / 2;
-    plate.position.z = (a.z + b.z) / 2;
-    plate.rotation.y = Math.atan2(span.x, span.z);
-    box(group, [Math.abs(FUNNEL.halfIn - width / 2) + 0.01, 0.006, 0.03], m.outerSteel, [x + s * (FUNNEL.halfIn + width / 2) / 2, top + 0.05, FUNNEL.zIn]);
-  }
   for (const z of [zStart + 0.1, zEnd - 0.1]) {
     for (const s of [-1, 1]) box(group, [0.04, top - 0.07, 0.04], m.aluminium, [x + s * (width / 2 - 0.02), (top - 0.07) / 2, z]);
     box(group, [width, 0.03, 0.04], m.aluminium, [x, 0.15, z]);
@@ -85,18 +75,30 @@ export function buildPedestal(m, base) {
 
 export const BIN = {halfX: 0.18, halfZ: 0.16, height: 0.28, wall: 0.012, floor: 0.04};
 
-export function buildBin(m, position) {
+// Open-top bin; `container(name, fade)` gives the fry-sim container for it.
+export function buildBin(m, position, dims = BIN, name = 'Disposal bin') {
   const group = new THREE.Group();
-  group.name = 'Disposal bin';
+  group.name = name;
   group.position.set(...position);
-  const {halfX, halfZ, height, wall, floor} = BIN;
+  const {halfX, halfZ, height, wall = 0.012, floor = 0.04} = dims;
   box(group, [2 * halfX, floor, 2 * halfZ], m.bin, [0, floor / 2, 0]);
   for (const s of [-1, 1]) {
     box(group, [wall, height, 2 * halfZ], m.bin, [s * (halfX - wall / 2), height / 2, 0]);
     box(group, [2 * halfX, height, wall], m.bin, [0, height / 2, s * (halfZ - wall / 2)]);
   }
   box(group, [2 * halfX + 0.02, 0.014, 0.02], m.binRim, [0, height, halfZ]);
-  return group;
+  group.updateMatrixWorld(true);
+  return {
+    group,
+    container: (containerName, fade) => ({
+      name: containerName, frame: group, halfX: halfX - wall, halfZ: halfZ - wall,
+      floor, top: height, cell: 0.02, fade,
+    }),
+  };
+}
+
+export function buildTote(m) {
+  return buildBin(m, TOTE.position, {...TOTE, floor: 0.03}, 'Overflow tote');
 }
 
 export function buildFloor() {
