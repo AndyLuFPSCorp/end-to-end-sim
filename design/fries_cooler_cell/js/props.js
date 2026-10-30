@@ -140,3 +140,40 @@ export function label(text, position, size = 0.032) {
   sprite.renderOrder = 10;
   return sprite;
 }
+
+// Simple operator mannequin for scale: `height` metres tall, standing with its
+// feet at the origin, facing +Z (rotate the group to place it).
+export function buildOperator(height = 1.75) {
+  const group = new THREE.Group();
+  group.name = `Operator ${height.toFixed(2)} m`;
+  const k = height / 1.75;
+  const mat = color => new THREE.MeshStandardMaterial({color, roughness: 0.8});
+  const skin = mat(0xd9a77f), trousers = mat(0x2f3a4a), jacket = mat(0xf4f6f7), vest = mat(0xc6e042),
+    boots = mat(0x1e2226), net = mat(0xffffff);
+  const part = (geometry, material, x, y, z) => {
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(x * k, y * k, z * k);
+    mesh.scale.setScalar(k);
+    mesh.castShadow = mesh.receiveShadow = true;
+    group.add(mesh);
+    return mesh;
+  };
+  for (const s of [-1, 1]) {
+    part(new THREE.BoxGeometry(0.11, 0.07, 0.27), boots, s * 0.095, 0.035, 0.04);
+    part(new THREE.CapsuleGeometry(0.065, 0.72, 6, 16), trousers, s * 0.095, 0.47, 0);
+    const arm = part(new THREE.CapsuleGeometry(0.047, 0.52, 6, 16), jacket, s * 0.235, 1.135, 0.01);
+    arm.rotation.z = s * 0.09;
+    part(new THREE.SphereGeometry(0.05, 16, 12), skin, s * 0.262, 0.815, 0.025);
+  }
+  part(new THREE.BoxGeometry(0.34, 0.16, 0.2), trousers, 0, 0.9, 0);
+  const torso = part(new THREE.CapsuleGeometry(0.15, 0.32, 8, 20), jacket, 0, 1.2, 0);
+  torso.scale.set(1.18 * k, k, 0.72 * k);
+  const hiVis = part(new THREE.CapsuleGeometry(0.153, 0.22, 8, 20), vest, 0, 1.2, 0);
+  hiVis.scale.set(1.19 * k, k, 0.74 * k);
+  part(new THREE.CylinderGeometry(0.05, 0.055, 0.1, 16), skin, 0, 1.47, 0);
+  part(new THREE.SphereGeometry(0.105, 24, 18), skin, 0, 1.625, 0.005);
+  // Food-plant hairnet cap; its top sits at the full height.
+  const cap = part(new THREE.SphereGeometry(0.112, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2), net, 0, 1.638, -0.005);
+  cap.scale.set(k, 1.0 * k, k);
+  return group;
+}

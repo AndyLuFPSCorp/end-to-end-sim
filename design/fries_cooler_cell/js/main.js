@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/OrbitControls.js';
 import {RoomEnvironment} from 'three/addons/RoomEnvironment.js';
 import {ROBOT_BASE, phaseAt} from './common.js';
-import {buildConveyor, buildPedestal, buildFloor, buildTote, label} from './props.js';
+import {buildConveyor, buildPedestal, buildFloor, buildTote, buildOperator, label} from './props.js';
 import {loadNova5, planTrajectory} from './robot.js';
 import {FrySim} from './fries.js';
 
@@ -23,7 +23,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xf3f5f7);
 scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
 const camera = new THREE.PerspectiveCamera(40, 1, 0.02, 30);
-const HOME_VIEW = {position: [1.25, 1.5, 1.85], target: [0.1, 0.62, 0.0]};
+const HOME_VIEW = {position: [1.45, 1.75, 2.35], target: [-0.05, 0.8, 0.0]};
 camera.position.set(...HOME_VIEW.position);
 const controls = new OrbitControls(camera, canvas);
 controls.target.set(...HOME_VIEW.target);
@@ -76,11 +76,17 @@ scene.add(conveyor.group);
 scene.add(buildPedestal(materials, ROBOT_BASE));
 const tote = buildTote(materials);
 scene.add(tote.group);
+// Operator behind the conveyor infeed, facing the cell, for scale.
+const OPERATOR = {height: 1.75, position: [-0.95, 0, -0.95], yaw: Math.PI / 4};
+const operator = buildOperator(OPERATOR.height);
+operator.position.set(...OPERATOR.position);
+operator.rotation.y = OPERATOR.yaw;
+scene.add(operator);
 
 const {createMethod} = await import(METHOD === 'B' ? './methodB.js' : './methodA.js');
 const method = createMethod({scene, materials, label, options: {tilt: params.get('tilt')}});
 const labels = new THREE.Group();
-labels.add(...method.labels);
+labels.add(...method.labels, label(`Operator ${OPERATOR.height.toFixed(2)} m`, [OPERATOR.position[0] - 0.5, OPERATOR.height * 0.7, OPERATOR.position[2] + 0.1]));
 scene.add(labels);
 document.title = `Fries cooler cell · ${method.title}`;
 $('method').value = METHOD;
@@ -195,6 +201,38 @@ $('focus').addEventListener('click', () => {
   camera.position.set(...method.focus.position);
   controls.target.set(...method.focus.target);
 });
+// Save the current view as a PNG (2× resolution, with a caption strip).
+function screenshot() {
+  const ratio = renderer.getPixelRatio();
+  renderer.setPixelRatio(Math.max(2, ratio));
+  resize();
+  renderer.render(scene, camera);
+  const strip = 44 * renderer.getPixelRatio();
+  const out = document.createElement('canvas');
+  out.width = canvas.width;
+  out.height = canvas.height + strip;
+  const ctx = out.getContext('2d');
+  ctx.drawImage(canvas, 0, 0);
+  ctx.fillStyle = '#1c2430';
+  ctx.fillRect(0, canvas.height, out.width, strip);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `600 ${Math.round(strip * 0.4)}px system-ui, -apple-system, Segoe UI, sans-serif`;
+  ctx.textBaseline = 'middle';
+  const caption = `Fries cooler cell · ${method.title} · t = ${state.time.toFixed(1)} s · ${phaseAt(method.phases, state.time)} · RTD ${thermal.temperature.toFixed(1)} °C`;
+  ctx.fillText(caption, strip * 0.4, canvas.height + strip / 2);
+  renderer.setPixelRatio(ratio);
+  resize();
+  renderer.render(scene, camera);
+  out.toBlob(blob => {
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `fries-cell-${METHOD}${METHOD === 'B' ? `-tilt${method.options.tilt}` : ''}-t${state.time.toFixed(1)}s.png`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  }, 'image/png');
+}
+$('screenshot').addEventListener('click', screenshot);
+
 function setPlaying(on) {
   state.playing = on;
   $('play').textContent = on ? 'Pause' : 'Play';
@@ -260,6 +298,7 @@ window.cell = {
     return fries.containerLevel(method.thermal.container, p.x, p.z) - p.y;
   },
   setSection,
+  screenshot,
   view(position, target) { camera.position.set(...position); controls.target.set(...target); controls.update(); renderer.render(scene, camera); },
   checkFk() {
     // URDF FK (used by IK) must agree with every rendered TCP.

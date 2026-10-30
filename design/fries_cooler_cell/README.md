@@ -27,7 +27,10 @@ Controls: drag to orbit, right-drag to pan, scroll to zoom. The panel also has:
 
 - play/pause, speed and a timeline scrubber;
 - **Section view**, which cuts the cooler shell to show its layers and the product pile;
-- camera presets.
+- camera presets;
+- **Screenshot**, which saves the current view as a PNG (2× resolution, captioned with the method, time, phase and RTD reading).
+
+A 1.75 m operator stands behind the conveyor infeed for scale.
 
 The HUD shows the RTD reading (in product / in air) and where the batch is, in kg.
 

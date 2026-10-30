@@ -106,7 +106,7 @@ async function fkCheck(page, label, times) {
         await at(38.4, 'B06_opening_lid');
         await view([0.25, 1.1, 1.25], [0.55, 0.62, 0]);
         await at(39.0, 'B07_lid_grip_close');
-        await view([1.25, 1.5, 1.85], [0.1, 0.62, 0.0]);
+        await view([1.45, 1.75, 2.35], [-0.05, 0.8, 0.0]);
       }
       await at(45.5, `B08_tilt_${tilt}`);
       const after = await at(e.dumped);
